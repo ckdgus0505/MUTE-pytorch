@@ -27,15 +27,20 @@ class LAS(nn.Module):
         self.listener = listener
         self.speller = speller
 
-    def forward(self, batch_data, batch_label, teacher_force_rate, is_training=True):
-        listener_feature = self.listener(batch_data)
+    def forward(self, text_only, batch_data, batch_label, teacher_force_rate, is_training=True):
+        if text_only:
+            batch_size = batch_data.shape[0]
+            listener_feature = torch.zeros(200,1024, device="cuda:0").repeat(batch_size,1,1)
+        else :
+            listener_feature = self.listener(batch_data)
         if is_training:
             raw_pred_seq, attention_record = self.speller(
-                listener_feature, ground_truth=batch_label, teacher_force_rate=teacher_force_rate
+                text_only, listener_feature, ground_truth=batch_label, teacher_force_rate=teacher_force_rate
             )
         else:
+            text_only = False
             raw_pred_seq, attention_record = self.speller(
-                listener_feature, ground_truth=None, teacher_force_rate=0
+                text_only, listener_feature, ground_truth=None, teacher_force_rate=0
             )
         return raw_pred_seq, attention_record
 
@@ -173,22 +178,104 @@ class Speller(nn.Module):
         )
         self.character_distribution = nn.Linear(hidden_size * 2, vocab_size)
         self.softmax = nn.LogSoftmax(dim=-1)
+        self.learnable_context_vector = True
+        if (self.learnable_context_vector):
+            self._context = torch.tensor(torch.rand(1024).clone(), requires_grad=True, device="cuda:0") # batchx1024
+            self.context = torch.nn.Parameter(self._context, requires_grad=True)
+        else:
+            self.context = torch.zeros(1024, requires_grad=False, device="cuda:0") # batchx1024
+
+    def initial_model_weight(self):
+        print("=======init==============")
+        # print(self.rnn_layer.state_dict())
+        for name, param in self.rnn_layer.named_parameters():
+            if 'bias' in name:
+                nn.init.constant(param, 0.0)
+            elif 'weight' in name:
+                nn.init.xavier_normal(param)
+
+        
 
     # Stepwise operation of each sequence
-    def forward_step(self, input_word, last_hidden_state, listener_feature):
+    # def forward_step(self, input_word, last_hidden_state, listener_feature):
+    #     rnn_output, hidden_state = self.rnn_layer(input_word, last_hidden_state)
+    #     attention_score, context = self.attention(rnn_output, listener_feature)
+    #     concat_feature = torch.cat([rnn_output.squeeze(dim=1), context], dim=-1)
+    #     raw_pred = self.softmax(self.character_distribution(concat_feature))
+
+    def forward_step(self, input_word, last_hidden_state, listener_feature, text_only=False):
         rnn_output, hidden_state = self.rnn_layer(input_word, last_hidden_state)
-        attention_score, context = self.attention(rnn_output, listener_feature)
+        if (text_only): # text-only data used
+            batch_size = input_word.shape[0]
+            attention_score = None
+            context = self.context.repeat(batch_size, 1)
+        else :
+            attention_score, context = self.attention(rnn_output, listener_feature)
         concat_feature = torch.cat([rnn_output.squeeze(dim=1), context], dim=-1)
         raw_pred = self.softmax(self.character_distribution(concat_feature))
 
         return raw_pred, hidden_state, context, attention_score
 
-    def forward(self, listener_feature, ground_truth=None, teacher_force_rate=0.9):
+    # def forward(self, listener_feature, ground_truth=None, teacher_force_rate=0.9):
+    #     if ground_truth is None:
+    #         teacher_force_rate = 0
+    #     teacher_force = True if np.random.random_sample() < teacher_force_rate else False
+
+    #     batch_size = listener_feature.size()[0]
+
+    #     output_word = CreateOnehotVariable(
+    #         self.float_type(np.zeros((batch_size, 1))), self.label_dim
+    #     )
+    #     if self.use_gpu:
+    #         output_word = output_word.cuda()
+    #     rnn_input = torch.cat([output_word, listener_feature[:, 0:1, :]], dim=-1)
+
+    #     hidden_state = None
+    #     raw_pred_seq = []
+    #     output_seq = []
+    #     attention_record = []
+
+    #     if (ground_truth is None) or (not teacher_force):
+    #         max_step = self.max_label_len
+    #     else:
+    #         max_step = ground_truth.size()[1]
+    #     for step in range(max_step):
+    #         raw_pred, hidden_state, context, attention_score = self.forward_step(
+    #             rnn_input, hidden_state, listener_feature
+    #         )
+    #         raw_pred_seq.append(raw_pred)
+    #         attention_record.append(attention_score)
+    #         # Teacher force - use ground truth as next step's input
+    #         if teacher_force:
+    #             output_word = ground_truth[:, step : step + 1, :].type(self.float_type)
+    #         else:
+    #             # Case 0. raw output as input
+    #             if self.decode_mode == 0:
+    #                 output_word = raw_pred.unsqueeze(1)
+    #             # Case 1. Pick character with max probability
+    #             elif self.decode_mode == 1:
+    #                 output_word = torch.zeros_like(raw_pred)
+    #                 for idx, i in enumerate(raw_pred.topk(1)[1]):
+    #                     output_word[idx, int(i)] = 1
+    #                 output_word = output_word.unsqueeze(1)
+    #             # Case 2. Sample categotical label from raw prediction
+    #             else:
+    #                 sampled_word = Categorical(raw_pred).sample()
+    #                 output_word = torch.zeros_like(raw_pred)
+    #                 for idx, i in enumerate(sampled_word):
+    #                     output_word[idx, int(i)] = 1
+    #                 output_word = output_word.unsqueeze(1)
+
+    #         rnn_input = torch.cat([output_word, context.unsqueeze(1)], dim=-1)
+
+    #     return raw_pred_seq, attention_record
+
+    def forward(self, text_only, listener_feature, ground_truth=None, teacher_force_rate=0.9):
         if ground_truth is None:
             teacher_force_rate = 0
         teacher_force = True if np.random.random_sample() < teacher_force_rate else False
 
-        batch_size = listener_feature.size()[0]
+        batch_size = listener_feature.size()[0] # 8,200,1024
 
         output_word = CreateOnehotVariable(
             self.float_type(np.zeros((batch_size, 1))), self.label_dim
@@ -208,7 +295,7 @@ class Speller(nn.Module):
             max_step = ground_truth.size()[1]
         for step in range(max_step):
             raw_pred, hidden_state, context, attention_score = self.forward_step(
-                rnn_input, hidden_state, listener_feature
+                rnn_input, hidden_state, listener_feature, text_only
             )
             raw_pred_seq.append(raw_pred)
             attention_record.append(attention_score)

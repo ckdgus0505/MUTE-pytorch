@@ -79,7 +79,11 @@ def main(args):
     print(las)
     las.cuda()
     # Create optimizer
-    optimizer = torch.optim.Adam(params=las.parameters(), lr=params["training"]["lr"],)
+    package = torch.load("runs/LAS_pretrain.pth.tar")
+    las.load_state_dict(package["state_dict"], strict=False)
+    las.speller.initial_model_weight()
+
+    optimizer = torch.optim.Adam(params=las.speller.parameters(), lr=params["training"]["lr"],)
     if params["training"]["continue_from"]:
         print("Loading checkpoint model %s" % params["training"]["continue_from"])
         package = torch.load(params["training"]["continue_from"])

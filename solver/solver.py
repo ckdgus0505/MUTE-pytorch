@@ -1,3 +1,4 @@
+from pickle import FALSE
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
@@ -61,9 +62,16 @@ def batch_iterator(
     max_label_len = min([batch_label.size()[1], max_label_len])
     criterion = nn.NLLLoss(ignore_index=0).cuda()
     optimizer.zero_grad()
+    if (is_training):
+        if (np.random.randint(10) < 6):
+            text_only = False
+        else :
+            text_only = True
+    else : 
+        text_only = False
 
     raw_pred_seq, _ = las_model(
-        batch_data=batch_data, batch_label=batch_label, teacher_force_rate=tf_rate, is_training=is_training,
+        text_only=text_only, batch_data=batch_data, batch_label=batch_label, teacher_force_rate=tf_rate, is_training=is_training
     )
     pred_y = (torch.cat([torch.unsqueeze(each_y, 1) for each_y in raw_pred_seq], 1)[:, :max_label_len, :]).contiguous()
 
